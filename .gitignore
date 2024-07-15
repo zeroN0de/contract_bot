@@ -2,7 +2,7 @@
 */node_modules
 /.pnp
 .pnp.js
-
+node_modules/
 # Created by https://www.toptal.com/developers/gitignore/api/macos,visualbasic,dotenv,direnv
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,visualbasic,dotenv,direnv
 
@@ -10,6 +10,8 @@
 .direnv
 .envrc
 
+wallets.json
+package-lock.json
 ### dotenv ###
 .env
 

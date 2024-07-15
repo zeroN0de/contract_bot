@@ -1,62 +1,97 @@
+import fs from "fs";
+import readline from "readline";
 import { ethers } from "ethers";
-import { BrowserProvider, parseUnits } from "ethers";
-import { HDNodeWallet } from "ethers/wallet";
-
 import dotenv from "dotenv";
+
 dotenv.config();
 
-import abi from "./abi.json" assert { type: "json" };
+const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
+const fundingWallet = new ethers.Wallet(process.env.PRIV_KEY, provider);
+const fileName = "wallets.json";
+const minimumBalance = ethers.utils.parseEther("0.1");
+const gasLimit = ethers.BigNumber.from(21000); // 이더 전송 가스 한도
+const gasPrice = ethers.utils.parseUnits("10", "gwei"); // 가스 가격
+const totalCost = minimumBalance.add(gasLimit.mul(gasPrice));
 
-const url =
-  "https://base-sepolia.g.alchemy.com/v2/mJQmSvUYhfb8mZhGsg_WRyF9nWVURjNK";
-const provider = new ethers.JsonRpcProvider(url);
-const wndsCA = "0xFc729c99c5e593b3747Fb83c9090c2F4B0398Df6";
-const wndsAddress = "0xF6EB0d21e5B381578abfc101A5b231f5c8bdf18B";
-// console.log(process.env.PRIV_KEY, "priv_key");
-const signer = new ethers.Wallet(process.env.PRIV_KEY, provider);
-let timestamp = Date.now() + 100;
-console.log(timestamp);
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
 
-async function depositWithEther() {
-  try {
-    const tx = await contract.deposit.send({
-      value: amountToSend,
+function loadWallets() {
+  if (!fs.existsSync(fileName)) {
+    return [];
+  }
+  return JSON.parse(fs.readFileSync(fileName, "utf8"));
+}
+
+async function fundWallet(walletAddress) {
+  const walletBalance = await provider.getBalance(walletAddress);
+  if (walletBalance.lt(minimumBalance)) {
+    try {
+      const tx = await fundingWallet.sendTransaction({
+        to: walletAddress,
+        value: minimumBalance,
+        gasLimit: gasLimit,
+        gasPrice: gasPrice,
+      });
+      await tx.wait();
+      console.log(`Funded wallet ${walletAddress} with minimum balance.`);
+    } catch (error) {
+      console.error(`Failed to fund wallet ${walletAddress}:`, error);
+    }
+  }
+}
+
+async function createAdditionalWallets(wallets, count) {
+  const balance = await provider.getBalance(fundingWallet.address);
+  if (balance.lt(totalCost.mul(count))) {
+    console.log("Insufficient funds in the funding wallet to proceed.");
+    return wallets; // 추가 지갑 없이 기존 지갑 반환
+  }
+
+  for (let i = 0; i < count; i++) {
+    const newWallet = ethers.Wallet.createRandom();
+    wallets.push({
+      number: wallets.length + 1,
+      address: newWallet.address,
+      privateKey: newWallet.privateKey,
+      publicKey: newWallet.publicKey,
+      mnemonic: newWallet.mnemonic.phrase,
     });
-    console.log("Transaction hash:", tx.hash);
-    await tx.wait();
-    console.log("Transaction confirmed");
-  } catch (error) {
-    console.error("Error:", error);
+    await fundWallet(newWallet.address);
   }
+  fs.writeFileSync(fileName, JSON.stringify(wallets, null, 2));
+  return wallets;
 }
 
-async function getNumber() {
-  // let blockNumber = await provider.getBlockNumber();
-  // console.log(blockNumber);
-  const contractAddress = "0xFDeaa3902FCe20D988ba5eBBDA96eEf4C31963Aa"; // 여기에 컨트랙트 주소 입력
-  const contarctAbi = abi.abi; // 컨트랙트 ABI 입력
-  // console.log(contarctAbi);
-  const contract = new ethers.Contract(contractAddress, contarctAbi, signer);
-  let amountIn = 100000000000;
-  let fees = 1000000000;
-  let values = amountIn + fees;
-  //   let ethValues = ethers.utils.BigInt(values.toString());
-  //   console.log(contract);
-  try {
-    const result = await contract.buy(
-      amountIn,
-      fees,
-      wndsCA,
-      wndsAddress,
-      timestamp,
-      {
-        value: values,
-      }
+async function checkAndPrepareWallets(neededWallets) {
+  let wallets = loadWallets();
+  if (wallets.length < neededWallets) {
+    wallets = await createAdditionalWallets(
+      wallets,
+      neededWallets - wallets.length
     );
-
-    console.log("Result:", result);
-  } catch (error) {
-    console.error("에러가 뭐냐? \n", error);
   }
+
+  // Existing wallets funding
+  for (const wallet of wallets) {
+    await fundWallet(wallet.address);
+  }
+
+  return wallets.slice(0, neededWallets);
 }
-getNumber();
+
+rl.question("How many wallets do you need to test with? ", async (input) => {
+  const neededWallets = parseInt(input);
+  if (isNaN(neededWallets) || neededWallets <= 0) {
+    console.log("Please enter a valid number.");
+    rl.close();
+    return;
+  }
+  const wallets = await checkAndPrepareWallets(neededWallets);
+  rl.close();
+  // Buying function call
+  const buyingModule = await import("./buying.js");
+  buyingModule.buying(wallets);
+});
